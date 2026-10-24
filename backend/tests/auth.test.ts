@@ -100,4 +100,49 @@ describe("administrator authentication", () => {
       });
     expect(response.status).toBe(403);
   });
+
+  it("resets the administrator password with the recovery key and invalidates old sessions", async () => {
+      const app = await createTestApp();
+      const client = request.agent(app);
+      const csrfToken = (await client.get("/api/auth/csrf")).body.csrfToken as string;
+      const setup = await client.post("/api/auth/setup")
+        .set("x-csrf-token", csrfToken)
+        .send({
+          setupKey: settings.INITIAL_ADMIN_SETUP_KEY,
+          email: "admin@example.com",
+          password: "the-original-test-password",
+        });
+      expect(setup.status).toBe(201);
+
+      const invalidReset = await client.post("/api/auth/reset-password")
+        .set("x-csrf-token", setup.body.csrfToken)
+        .send({
+          setupKey: "wrong recovery key",
+          email: "admin@example.com",
+          password: "a-new-long-test-password",
+        });
+      expect(invalidReset.status).toBe(403);
+      expect((await client.get("/api/auth/me")).status).toBe(200);
+
+      const reset = await client.post("/api/auth/reset-password")
+        .set("x-csrf-token", setup.body.csrfToken)
+        .send({
+          setupKey: settings.INITIAL_ADMIN_SETUP_KEY,
+          email: "admin@example.com",
+          password: "a-new-long-test-password",
+        });
+      expect(reset.status).toBe(204);
+
+      const nextCsrf = (await client.get("/api/auth/csrf")).body.csrfToken as string;
+      const oldPasswordLogin = await client.post("/api/auth/login")
+        .set("x-csrf-token", nextCsrf)
+        .send({ email: "admin@example.com", password: "the-original-test-password" });
+      expect(oldPasswordLogin.status).toBe(401);
+
+      const newPasswordLogin = await client.post("/api/auth/login")
+        .set("x-csrf-token", nextCsrf)
+        .send({ email: "admin@example.com", password: "a-new-long-test-password" });
+      expect(newPasswordLogin.status).toBe(200);
+      expect((await client.get("/api/auth/me")).body.user.email).toBe("admin@example.com");
+  });
 });
