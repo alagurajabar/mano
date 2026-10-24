@@ -15,6 +15,11 @@ const loginSchema = z.object({
   email: z.string().trim().email().max(254),
   password: z.string().min(1).max(72).refine((value) => Buffer.byteLength(value, "utf8") <= 72),
 });
+const passwordResetSchema = z.object({
+  setupKey: z.string().min(1),
+  email: z.string().trim().email().max(254),
+  password: z.string().min(12).max(72).refine((value) => Buffer.byteLength(value, "utf8") <= 72),
+});
 const authenticationRateLimit = rateLimit({
   windowMs: 15 * 60 * 1000,
   limit: 10,
@@ -117,6 +122,49 @@ export function createAuthRouter(database: DriveVaultDatabase, settings: typeof 
           response.json({ user: { id: user.id, email: user.email }, csrfToken: request.session.csrfToken });
         });
       });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.post("/reset-password", authenticationRateLimit, async (request, response, next) => {
+    const parsed = passwordResetSchema.safeParse(request.body);
+    if (!parsed.success) {
+      response.status(400).json({
+        error: "Enter a valid email, recovery key, and a new password of at least 12 characters (maximum 72 UTF-8 bytes).",
+      });
+      return;
+    }
+
+    const supplied = Buffer.from(parsed.data.setupKey);
+    const expected = Buffer.from(settings.INITIAL_ADMIN_SETUP_KEY);
+    if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
+      response.status(403).json({ error: "Recovery key is invalid." });
+      return;
+    }
+
+    try {
+      const passwordHash = await hashPassword(parsed.data.password);
+      const reset = await database.transaction(async (transaction) => {
+        const user = await transaction.get<{ id: string }>(
+          "SELECT id FROM users WHERE email = ?",
+          [parsed.data.email.toLowerCase()],
+        );
+        if (!user) return false;
+        await transaction.run("UPDATE users SET password_hash = ?, updated_at = datetime('now') WHERE id = ?", [
+          passwordHash,
+          user.id,
+        ]);
+        await transaction.run("DELETE FROM sessions");
+        return true;
+      });
+
+      if (!reset) {
+        response.status(403).json({ error: "Recovery key or administrator email is invalid." });
+        return;
+      }
+
+      response.status(204).end();
     } catch (error) {
       next(error);
     }
