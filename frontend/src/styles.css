@@ -65,6 +65,7 @@ button { color: inherit; }
 .button-primary:disabled { opacity: .65; cursor: wait; }
 .button-secondary { color: #585de0; border-color: #e1e2ff; background: #f7f7ff; }
 .button-full { width: 100%; min-height: 42px; margin-top: 3px; }
+.auth-mode-button { display: block; margin: 14px auto 0; padding: 4px 0; color: #686de5; border: 0; background: transparent; font-size: 11px; font-weight: 600; cursor: pointer; }
 .stats-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 15px; }
 .stat-card, .panel { border: 1px solid #e9eaf0; border-radius: 10px; background: #fff; box-shadow: 0 2px 7px #23254806; }
 .stat-card { min-height: 125px; padding: 17px 17px 14px; }
