@@ -1,0 +1,9 @@
+{
+  "framework": "express",
+  "buildCommand": "npm run build -w backend && npm run build -w frontend",
+  "functions": {
+    "index.mjs": {
+      "includeFiles": "{backend/migrations/**/*.sql,public/**/*}"
+    }
+  }
+}
