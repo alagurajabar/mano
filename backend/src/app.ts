@@ -1,15 +1,19 @@
 import express from "express";
-import type { Database } from "better-sqlite3";
 import session from "express-session";
 import helmet from "helmet";
+import path from "node:path";
 import type { config as appConfig } from "./config.js";
 import { createAuthRouter } from "./auth/auth-routes.js";
-import { SQLiteSessionStore } from "./database/session-store.js";
+import type { DriveVaultDatabase } from "./database/database.js";
+import { LibsqlSessionStore } from "./database/session-store.js";
 import { createGoogleRouter } from "./google-drive/oauth-routes.js";
 import { provideCsrfToken, verifyCsrfToken } from "./middleware/csrf.js";
 
-export function createApp(database: Database, settings: typeof appConfig): express.Express {
-  const app = express();
+export function createApp(
+  database: DriveVaultDatabase,
+  settings: typeof appConfig,
+  app: express.Express = express(),
+): express.Express {
   app.disable("x-powered-by");
   if (settings.TRUST_PROXY_HOPS > 0) {
     app.set("trust proxy", settings.TRUST_PROXY_HOPS);
@@ -20,7 +24,7 @@ export function createApp(database: Database, settings: typeof appConfig): expre
     session({
       name: "drivevault.sid",
       secret: settings.SESSION_SECRET,
-      store: new SQLiteSessionStore(database),
+      store: new LibsqlSessionStore(database),
       resave: false,
       saveUninitialized: false,
       cookie: {
@@ -32,6 +36,20 @@ export function createApp(database: Database, settings: typeof appConfig): expre
       },
     }),
   );
+
+  if (process.env.VERCEL === "1") {
+    const publicDirectory = path.resolve(process.cwd(), "public");
+    app.get("/", (_request, response, next) => {
+      response.sendFile(path.join(publicDirectory, "index.html"), (error) => {
+        if (error) next(error);
+      });
+    });
+    app.get("/assets/:asset", (request, response, next) => {
+      response.sendFile(request.params.asset, { root: path.join(publicDirectory, "assets") }, (error) => {
+        if (error) next(error);
+      });
+    });
+  }
 
   app.get("/api/health", (_request, response) => response.json({ status: "ok" }));
   app.get("/api/auth/csrf", provideCsrfToken);
