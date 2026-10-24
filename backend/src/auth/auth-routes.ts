@@ -1,9 +1,9 @@
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { Router } from "express";
-import type { Database } from "better-sqlite3";
 import { rateLimit } from "express-rate-limit";
 import { z } from "zod";
 import type { config as appConfig } from "../config.js";
+import type { DriveVaultDatabase } from "../database/database.js";
 import { hashPassword, verifyPassword } from "./password.js";
 
 const setupSchema = z.object({
@@ -29,13 +29,12 @@ interface UserRow {
   password_hash: string;
 }
 
-export function createAuthRouter(database: Database, settings: typeof appConfig): Router {
+export function createAuthRouter(database: DriveVaultDatabase, settings: typeof appConfig): Router {
   const router = Router();
 
-  router.get("/status", (_request, response) => {
-    const row = database.prepare("SELECT COUNT(*) AS count FROM users").get() as {
-      count: number;
-    };
+  router.get("/status", async (_request, response) => {
+    const row = await database.get<{ count: number }>("SELECT COUNT(*) AS count FROM users");
+    if (!row) throw new Error("Unable to read administrator setup status.");
     response.json({ setupRequired: row.count === 0 });
   });
 
@@ -56,16 +55,17 @@ export function createAuthRouter(database: Database, settings: typeof appConfig)
     try {
       const passwordHash = await hashPassword(parsed.data.password);
       const userId = randomUUID();
-      const createAdmin = database.transaction(() => {
-        const existing = database.prepare("SELECT 1 FROM users LIMIT 1").get();
+      const created = await database.transaction(async (transaction) => {
+        const existing = await transaction.get("SELECT 1 AS present FROM users LIMIT 1");
         if (existing) return false;
-        database
-          .prepare("INSERT INTO users (id, email, password_hash) VALUES (?, ?, ?)")
-          .run(userId, parsed.data.email.toLowerCase(), passwordHash);
+        await transaction.run(
+          "INSERT INTO users (id, email, password_hash) VALUES (?, ?, ?)",
+          [userId, parsed.data.email.toLowerCase(), passwordHash],
+        );
         return true;
       });
 
-      if (!createAdmin()) {
+      if (!created) {
         response.status(409).json({ error: "An administrator account already exists." });
         return;
       }
@@ -95,9 +95,10 @@ export function createAuthRouter(database: Database, settings: typeof appConfig)
     }
 
     try {
-      const user = database
-        .prepare("SELECT id, email, password_hash FROM users WHERE email = ?")
-        .get(parsed.data.email.toLowerCase()) as UserRow | undefined;
+      const user = await database.get<UserRow>(
+        "SELECT id, email, password_hash FROM users WHERE email = ?",
+        [parsed.data.email.toLowerCase()],
+      );
       const isValid = user
         ? await verifyPassword(parsed.data.password, user.password_hash)
         : false;
@@ -121,14 +122,15 @@ export function createAuthRouter(database: Database, settings: typeof appConfig)
     }
   });
 
-  router.get("/me", (request, response) => {
+  router.get("/me", async (request, response) => {
     if (!request.session.userId) {
       response.status(401).json({ error: "Authentication required." });
       return;
     }
-    const user = database
-      .prepare("SELECT id, email FROM users WHERE id = ?")
-      .get(request.session.userId) as { id: string; email: string } | undefined;
+    const user = await database.get<{ id: string; email: string }>(
+      "SELECT id, email FROM users WHERE id = ?",
+      [request.session.userId],
+    );
     if (!user) {
       request.session.destroy(() => undefined);
       response.status(401).json({ error: "Authentication required." });
