@@ -71,6 +71,7 @@ npm run dev
 
 The API is available at `http://localhost:4000`; the Vite app is at `http://localhost:5173`. With the workspace script, the default SQLite file is created under `backend/data/`.
 On first visit, create the administrator using the configured setup key and a password of at least 12 characters. The setup route permits only one administrator and becomes unavailable after creation.
+If the administrator password is lost, use **Forgot password?** on the sign-in screen with the administrator email, `INITIAL_ADMIN_SETUP_KEY`, and a new password. This resets only the password and invalidates existing sessions; it does not remove connected Drive accounts or files. Rotate the recovery key in the deployment environment before using this flow if the key may have been exposed.
 
 ## Phase 1 test procedure
 
