@@ -67,6 +67,15 @@ export function createApp(
       response: express.Response,
       _next: express.NextFunction,
     ) => {
+      if (
+        typeof error === "object" &&
+        error !== null &&
+        "type" in error &&
+        error.type === "entity.too.large"
+      ) {
+        response.status(413).json({ error: "The request is too large. File uploads are limited to 4 MB." });
+        return;
+      }
       console.error("Unhandled API error", error);
       response.status(500).json({ error: "Something went wrong. Please try again." });
     },

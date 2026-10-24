@@ -3,7 +3,9 @@ import {
   ArrowDownToLine,
   ArrowUpFromLine,
   ChartNoAxesCombined,
+  ChevronRight,
   Cloud,
+  Download,
   File,
   FileText,
   Film,
@@ -12,10 +14,14 @@ import {
   HardDrive,
   LayoutDashboard,
   LogOut,
+  Pencil,
+  Plus,
+  RefreshCw,
   Search,
   Settings,
   ShieldCheck,
   Share2,
+  Trash2,
   Upload,
 } from "lucide-react";
 import { apiRequest, ApiRequestError, clearCsrfToken } from "./api";
@@ -249,12 +255,14 @@ function Dashboard({ user, onLogout }: { user: User; onLogout: () => void }) {
               {!accountsConfigured && <div className="setup-notice">{accountsSetupError || "Google OAuth is not configured on the server."} See the Google Cloud setup steps in README.md.</div>}
               <button
                 className="button button-primary connect-account-button"
-                disabled={!accountsConfigured || connecting || accounts.length >= 10}
+                disabled={!accountsConfigured || connecting}
                 onClick={() => void connectDrive()}
               >
                 <Upload size={15} /> {connecting ? "Opening Google…" : "Connect Google Drive"}
               </button>
             </section>
+          ) : active === "My Files" || active === "Videos" || active === "PDFs" ? (
+            <FilesBrowser accounts={accounts} section={active} />
           ) : active === "Dashboard" ? (
           <>
           <section className="stats-grid" aria-label="Storage overview">
@@ -293,7 +301,7 @@ function Dashboard({ user, onLogout }: { user: User; onLogout: () => void }) {
             <section className="panel section-placeholder">
               <span className="empty-icon"><Folder size={23} /></span>
               <h2>{active} is not available yet</h2>
-              <p>Google Drive account connection is ready. Browsing files, transfers, sharing, and settings are still being built.</p>
+              <p>Google Drive browsing is available. Transfers, sharing, and these settings are still being built.</p>
               <button className="button button-secondary" onClick={() => setActive("Storage Accounts")}>Manage Drive accounts</button>
             </section>
           )}
@@ -325,6 +333,232 @@ interface DriveAccount {
   connectionStatus: string;
 }
 
+interface DriveFile {
+  id: string;
+  name: string;
+  mimeType: string;
+  size?: string;
+  modifiedTime?: string;
+}
+
+const GOOGLE_FOLDER_MIME = "application/vnd.google-apps.folder";
+const MAX_UPLOAD_BYTES = 4 * 1024 * 1024;
+
+function FilesBrowser({ accounts, section }: { accounts: DriveAccount[]; section: "My Files" | "Videos" | "PDFs" }) {
+  const [accountId, setAccountId] = useState("");
+  const [folderPath, setFolderPath] = useState<{ id: string; name: string }[]>([]);
+  const [files, setFiles] = useState<DriveFile[]>([]);
+  const [nextPageToken, setNextPageToken] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [busy, setBusy] = useState(false);
+  const folderId = folderPath.at(-1)?.id;
+
+  useEffect(() => {
+    if (!accounts.length) {
+      setAccountId("");
+      setFiles([]);
+      return;
+    }
+    if (!accounts.some((account) => account.id === accountId)) {
+      setAccountId(accounts[0].id);
+      setFolderPath([]);
+    }
+  }, [accounts, accountId]);
+
+  async function loadFiles(loadMore = false) {
+    if (!accountId) return;
+    setLoading(true);
+    setError("");
+    try {
+      const params = new URLSearchParams({ accountId });
+      if (folderId) params.set("folderId", folderId);
+      if (loadMore && nextPageToken) params.set("pageToken", nextPageToken);
+      const result = await apiRequest<{ files: DriveFile[]; nextPageToken?: string }>(
+        `/api/google/files?${params.toString()}`,
+      );
+      setFiles((current) => loadMore ? [...current, ...result.files] : result.files);
+      setNextPageToken(result.nextPageToken ?? "");
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Unable to load Drive files.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    setFolderPath([]);
+  }, [accountId]);
+
+  useEffect(() => {
+    setFiles([]);
+    setNextPageToken("");
+    void loadFiles();
+  }, [accountId, folderId]);
+
+  const visibleFiles = files.filter((file) => {
+    if (section === "Videos") return file.mimeType.startsWith("video/");
+    if (section === "PDFs") return file.mimeType === "application/pdf";
+    return true;
+  });
+
+  async function createFolder() {
+    const name = window.prompt("New folder name");
+    if (!name?.trim()) return;
+    setBusy(true);
+    setError("");
+    try {
+      await apiRequest("/api/google/folders", {
+        method: "POST",
+        body: JSON.stringify({ name, ...(folderId ? { parentId: folderId } : {}) }),
+      });
+      setNotice("Folder created.");
+      await loadFiles();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Unable to create the folder.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function uploadFile(file: File) {
+    if (file.size > MAX_UPLOAD_BYTES) {
+      setError("Uploads are limited to 4 MB per file on this deployment.");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      const params = new URLSearchParams({
+        accountId,
+        name: file.name,
+        mimeType: file.type || "application/octet-stream",
+      });
+      if (folderId) params.set("parentId", folderId);
+      await apiRequest(`/api/google/files?${params.toString()}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/octet-stream" },
+        body: file,
+      });
+      setNotice("File uploaded.");
+      await loadFiles();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Unable to upload this file.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function renameFile(file: DriveFile) {
+    const name = window.prompt("Rename file", file.name);
+    if (!name?.trim() || name === file.name) return;
+    setBusy(true);
+    setError("");
+    try {
+      await apiRequest(`/api/google/files/${encodeURIComponent(file.id)}?accountId=${encodeURIComponent(accountId)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ name }),
+      });
+      setNotice("File renamed.");
+      await loadFiles();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Unable to rename this file.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function trashFile(file: DriveFile) {
+    if (!window.confirm(`Move "${file.name}" to Google Drive Trash?`)) return;
+    setBusy(true);
+    setError("");
+    try {
+      await apiRequest(`/api/google/files/${encodeURIComponent(file.id)}?accountId=${encodeURIComponent(accountId)}`, {
+        method: "DELETE",
+      });
+      setNotice("File moved to Trash.");
+      await loadFiles();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Unable to move this file to Trash.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="panel drive-browser">
+      <div className="panel-heading drive-browser-heading">
+        <div><h2>{section === "My Files" ? "Drive files" : section}</h2><p>Browse and manage files from your connected Google Drive accounts. Uploads are limited to 4 MB each.</p></div>
+        <select aria-label="Google Drive account" value={accountId} onChange={(event) => setAccountId(event.target.value)} disabled={!accounts.length}>
+          {accounts.length === 0 ? <option value="">No accounts</option> : accounts.map((account) => <option value={account.id} key={account.id}>{account.email}</option>)}
+        </select>
+      </div>
+      {!accounts.length ? (
+        <div className="empty-state"><span className="empty-icon"><Cloud size={23} /></span><h3>Connect a Google Drive account</h3><p>Your connected Drive files will appear here.</p></div>
+      ) : (
+        <>
+          <div className="drive-toolbar">
+            <div className="drive-breadcrumbs">
+              <button className="text-button" onClick={() => setFolderPath([])}>My Drive</button>
+              {folderPath.map((folder, index) => (
+                <span key={folder.id} className="drive-crumb">
+                  <ChevronRight size={13} />
+                  <button className="text-button" onClick={() => setFolderPath(folderPath.slice(0, index + 1))}>{folder.name}</button>
+                </span>
+              ))}
+            </div>
+            <div className="drive-actions">
+              <button className="button button-secondary" onClick={() => void loadFiles()} disabled={loading || busy} aria-label="Refresh files"><RefreshCw size={14} /> Refresh</button>
+              <button className="button button-secondary" onClick={() => void createFolder()} disabled={busy}><Plus size={14} /> New folder</button>
+              <label className={`button button-primary upload-file-button ${busy ? "disabled" : ""}`}>
+                <Upload size={14} /> Upload
+                <input type="file" disabled={busy} onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (file) void uploadFile(file);
+                  event.currentTarget.value = "";
+                }} />
+              </label>
+            </div>
+          </div>
+          {error && <div className="form-error drive-message" role="alert">{error}</div>}
+          {notice && <div className="drive-success" role="status">{notice}</div>}
+          {loading && !files.length ? <div className="drive-loading">Loading files…</div> : (
+            <div className="drive-file-list">
+              {visibleFiles.map((file) => {
+                const isFolder = file.mimeType === GOOGLE_FOLDER_MIME;
+                const downloadParams = new URLSearchParams({
+                  accountId,
+                  name: file.name,
+                  mimeType: file.mimeType,
+                });
+                const downloadUrl = `/api/google/files/${encodeURIComponent(file.id)}/download?${downloadParams.toString()}`;
+                return (
+                  <article className="drive-file-row" key={file.id}>
+                    <span className="drive-file-icon">{isFolder ? <Folder size={18} /> : <File size={18} />}</span>
+                    <div className="drive-file-copy">
+                      {isFolder ? (
+                        <button className="drive-file-name" onClick={() => setFolderPath((current) => [...current, { id: file.id, name: file.name }])}>{file.name}</button>
+                      ) : <strong className="drive-file-name">{file.name}</strong>}
+                      <small>{isFolder ? "Folder" : `${file.size ? formatBytes(Number(file.size)) : "Google Drive file"}${file.modifiedTime ? ` · ${new Date(file.modifiedTime).toLocaleDateString()}` : ""}`}</small>
+                    </div>
+                    {!isFolder && <a className="icon-button drive-icon-action" href={downloadUrl} aria-label={`Download ${file.name}`} title="Download"><Download size={16} /></a>}
+                    <button className="icon-button drive-icon-action" onClick={() => void renameFile(file)} disabled={busy} aria-label={`Rename ${file.name}`} title="Rename"><Pencil size={15} /></button>
+                    <button className="icon-button drive-icon-action" onClick={() => void trashFile(file)} disabled={busy} aria-label={`Move ${file.name} to Trash`} title="Move to Trash"><Trash2 size={15} /></button>
+                  </article>
+                );
+              })}
+              {!loading && !visibleFiles.length && <div className="drive-empty">{files.length ? `No ${section.toLowerCase()} in this folder.` : "This folder is empty."}</div>}
+              {nextPageToken && <button className="button button-secondary drive-load-more" onClick={() => void loadFiles(true)} disabled={loading}>{loading ? "Loading…" : "Load more"}</button>}
+            </div>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
 function driveErrorMessage(error: string): string {
   switch (error) {
     case "cancelled": return "Google Drive connection was cancelled.";
@@ -333,6 +567,7 @@ function driveErrorMessage(error: string): string {
     case "token_exchange": return "Google could not complete authorization. Check the OAuth client and redirect URI.";
     case "profile": return "DriveVault could not read the Google account profile. Check the consent-screen scopes.";
     case "account_limit": return "You have reached the limit of 10 connected Google Drive accounts.";
+    case "access_denied": return "Google blocked this account because the OAuth app is in Testing. Add this Google account as a test user in Google Cloud Console, or complete OAuth verification.";
     default: return "Google Drive could not be connected. Please try again.";
   }
 }

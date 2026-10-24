@@ -16,10 +16,10 @@ const environmentSchema = z.object({
     GOOGLE_CLIENT_SECRET: z.string().default(""),
     GOOGLE_REDIRECT_URI: z.string().url().default("http://localhost:4000/api/oauth/google/callback"),
     TOKEN_ENCRYPTION_KEY: z.string().default(""),
-    TRUST_PROXY_HOPS: z.coerce.number().int().nonnegative().default(0),
+    TRUST_PROXY_HOPS: z.coerce.number().int().nonnegative().default(process.env.VERCEL === "1" ? 1 : 0),
     COOKIE_SECURE: z
         .enum(["true", "false"])
-        .default("false")
+        .default(process.env.VERCEL === "1" ? "true" : "false")
         .transform((value) => value === "true"),
 });
 export const config = environmentSchema.parse(process.env);

@@ -21,8 +21,10 @@ const authenticationRateLimit = rateLimit({
 });
 export function createAuthRouter(database, settings) {
     const router = Router();
-    router.get("/status", (_request, response) => {
-        const row = database.prepare("SELECT COUNT(*) AS count FROM users").get();
+    router.get("/status", async (_request, response) => {
+        const row = await database.get("SELECT COUNT(*) AS count FROM users");
+        if (!row)
+            throw new Error("Unable to read administrator setup status.");
         response.json({ setupRequired: row.count === 0 });
     });
     router.post("/setup", authenticationRateLimit, async (request, response, next) => {
@@ -40,16 +42,14 @@ export function createAuthRouter(database, settings) {
         try {
             const passwordHash = await hashPassword(parsed.data.password);
             const userId = randomUUID();
-            const createAdmin = database.transaction(() => {
-                const existing = database.prepare("SELECT 1 FROM users LIMIT 1").get();
+            const created = await database.transaction(async (transaction) => {
+                const existing = await transaction.get("SELECT 1 AS present FROM users LIMIT 1");
                 if (existing)
                     return false;
-                database
-                    .prepare("INSERT INTO users (id, email, password_hash) VALUES (?, ?, ?)")
-                    .run(userId, parsed.data.email.toLowerCase(), passwordHash);
+                await transaction.run("INSERT INTO users (id, email, password_hash) VALUES (?, ?, ?)", [userId, parsed.data.email.toLowerCase(), passwordHash]);
                 return true;
             });
-            if (!createAdmin()) {
+            if (!created) {
                 response.status(409).json({ error: "An administrator account already exists." });
                 return;
             }
@@ -79,9 +79,7 @@ export function createAuthRouter(database, settings) {
             return;
         }
         try {
-            const user = database
-                .prepare("SELECT id, email, password_hash FROM users WHERE email = ?")
-                .get(parsed.data.email.toLowerCase());
+            const user = await database.get("SELECT id, email, password_hash FROM users WHERE email = ?", [parsed.data.email.toLowerCase()]);
             const isValid = user
                 ? await verifyPassword(parsed.data.password, user.password_hash)
                 : false;
@@ -105,14 +103,12 @@ export function createAuthRouter(database, settings) {
             next(error);
         }
     });
-    router.get("/me", (request, response) => {
+    router.get("/me", async (request, response) => {
         if (!request.session.userId) {
             response.status(401).json({ error: "Authentication required." });
             return;
         }
-        const user = database
-            .prepare("SELECT id, email FROM users WHERE id = ?")
-            .get(request.session.userId);
+        const user = await database.get("SELECT id, email FROM users WHERE id = ?", [request.session.userId]);
         if (!user) {
             request.session.destroy(() => undefined);
             response.status(401).json({ error: "Authentication required." });

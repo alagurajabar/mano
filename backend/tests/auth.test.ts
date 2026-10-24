@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import request from "supertest";
-import type { Database } from "better-sqlite3";
 import { createApp } from "../src/app.js";
 import { createDatabase } from "../src/database/database.js";
+import type { DriveVaultDatabase } from "../src/database/database.js";
 
 const settings = {
   NODE_ENV: "test",
@@ -19,10 +19,10 @@ const settings = {
   COOKIE_SECURE: false,
 } as const;
 
-let database: Database | undefined;
+let database: DriveVaultDatabase | undefined;
 
-afterEach(() => {
-  database?.close();
+afterEach(async () => {
+  await database?.close();
   database = undefined;
 });
 

@@ -8,8 +8,7 @@ const server = app.listen(config.PORT, () => {
 });
 function shutdown() {
     server.close(() => {
-        database.close();
-        process.exit(0);
+        void database.close().then(() => process.exit(0));
     });
 }
 process.on("SIGINT", shutdown);

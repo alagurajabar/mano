@@ -44,7 +44,7 @@ backend/
 
 ### Planned flows
 
-1. **Google OAuth (implemented):** An authenticated admin initiates server-side OAuth with a random one-time `state`; callback validates it, exchanges the code on the backend, encrypts refresh/access tokens at rest, fetches account profile and quota, and saves the account. The server enforces a maximum of ten accounts. Drive file browsing and transfer operations are still planned for later phases.
+1. **Google Drive (partially implemented):** An authenticated admin can connect up to ten accounts, browse folders, download files, create folders, upload files up to 4 MB, rename files, and move files to Trash. OAuth tokens stay encrypted on the server and are refreshed automatically. Large/resumable transfers, sharing, and Google Workspace document export are not implemented yet.
 2. **Large uploads (Phase 4):** The client streams chunks; the API streams them into a Drive resumable session without holding full files in memory. The chosen single account must have enough free quota. Persist session state, report progress, retry transient errors with bounded exponential backoff, verify final Drive metadata, then atomically mark the virtual file complete. Reconcile Drive success if the metadata transaction fails.
 3. **Downloads and previews (Phases 5–6):** API routes authorize the owner or share before each response, proxy Drive media as a stream, and forward validated HTTP Range requests for seeking and resumable downloads. Do not expose Drive URLs or IDs.
 4. **Share links (Phase 7):** Generate a cryptographically random bearer token, persist only its hash, and check token, target scope, expiry, disabled status, password, and download policy on every request. Folder grants are confined to the selected folder subtree.
@@ -83,7 +83,7 @@ On first visit, create the administrator using the configured setup key and a pa
 ## Google Cloud setup
 
 1. Create a Google Cloud project and enable the Google Drive API.
-2. Configure the OAuth consent screen for the intended users, add authorized test users while in testing, and include the `openid`, `email`, `profile`, and `https://www.googleapis.com/auth/drive.metadata.readonly` scopes.
+2. Configure the OAuth consent screen for the intended users and add every Google account to **Test users** while the app is in Testing. This app requests the broad `https://www.googleapis.com/auth/drive` scope so it can manage files across each connected Drive. Google may require OAuth verification (and additional review) before accounts outside the tester list can authorize it. Google also expires refresh tokens after seven days for external apps left in Testing when they request Drive scopes, so publishing and completing the required verification is necessary for persistent connections.
 3. Create an OAuth client with application type **Web application**. Keep the client secret on the backend only.
 4. Add `http://localhost:4000/api/oauth/google/callback` to Authorized redirect URIs for local development and the HTTPS callback URL for production.
 5. For local development, set `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI`, and `TOKEN_ENCRYPTION_KEY` in `backend/.env` (or the workspace `.env`); never commit real values. For Vercel production, set the same variables in Project Settings → Environment Variables for the Production environment, then redeploy. The client ID and secret must come from the same OAuth client. The setup key is unrelated to Google OAuth. Generate `TOKEN_ENCRYPTION_KEY` with:
@@ -92,7 +92,7 @@ On first visit, create the administrator using the configured setup key and a pa
    node -e "console.log(require('node:crypto').randomBytes(32).toString('base64url'))"
    ```
 
-   Restart both services after updating `.env`. Open **Storage Accounts** and select **Connect Google Drive**. The current OAuth integration connects accounts and reads profile/quota metadata; file browsing and operations are not yet implemented.
+   Restart both services after updating `.env`. Open **Storage Accounts** and select **Connect Google Drive**. Google account selection appears for each connection. If an account was previously connected with metadata-only access, reconnect it to grant the file-management permission. In Google Cloud Console, add each account under OAuth consent screen → Audience → Test users while the app remains in Testing.
 
 ## Production checklist
 
@@ -102,6 +102,7 @@ On first visit, create the administrator using the configured setup key and a pa
 - Keep the Turso auth token and OAuth encryption key private, and configure database backups/restore procedures for the Turso database.
 - Configure proxy trust only for the known proxy, rate limits, monitoring, and tested restore procedures.
 - Do not expose backend OAuth secrets or Drive IDs through frontend bundles, logs, or public responses.
+- Vercel uploads are currently limited to 4 MB per file; use Google Drive directly for larger files until resumable transfer support is added.
 
 Generate local secrets with Node's cryptographic random generator, for example:
 
