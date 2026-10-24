@@ -1,9 +1,9 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import type { Database } from "better-sqlite3";
 import { Router } from "express";
 import type { NextFunction, Request, Response } from "express";
 import { z } from "zod";
 import type { config as appConfig } from "../config.js";
+import type { DriveVaultDatabase } from "../database/database.js";
 import { requireAuthentication } from "../middleware/authentication.js";
 import { encryptToken } from "./token-crypto.js";
 
@@ -58,7 +58,7 @@ function readOAuthCredentials(settings: typeof appConfig):
   if (placeholders) {
     return {
       credentials: null,
-      error: "Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in the backend .env file.",
+      error: "Configure GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in the deployment environment (Vercel Project Settings > Environment Variables for production, or backend .env for local development).",
     };
   }
 
@@ -66,7 +66,7 @@ function readOAuthCredentials(settings: typeof appConfig):
     settings.TOKEN_ENCRYPTION_KEY.toLowerCase().startsWith("replace-with-")) {
     return {
       credentials: null,
-      error: "Set TOKEN_ENCRYPTION_KEY to a Base64URL-encoded 32-byte key in the backend .env file.",
+      error: "Configure TOKEN_ENCRYPTION_KEY as a Base64URL-encoded 32-byte key in the deployment environment (Vercel Project Settings > Environment Variables for production, or backend .env for local development).",
     };
   }
 
@@ -106,18 +106,23 @@ function parseQuota(value: string | undefined): number | null {
   return Number.isSafeInteger(parsed) ? parsed : null;
 }
 
-export function createGoogleRouter(database: Database, settings: typeof appConfig): Router {
+export function createGoogleRouter(database: DriveVaultDatabase, settings: typeof appConfig): Router {
   const router = Router();
 
-  router.get("/google/accounts", requireAuthentication, (request, response) => {
+  router.get("/google/accounts", requireAuthentication, async (request, response) => {
+    const userId = request.session.userId;
+    if (!userId) {
+      response.status(401).json({ error: "Authentication required." });
+      return;
+    }
     const configured = readOAuthCredentials(settings);
-    const accounts = database.prepare(`
+    const accounts = await database.all<DriveAccountRow>(`
       SELECT id, email, display_name, storage_used_bytes,
              storage_total_bytes, connection_status
       FROM drive_accounts
       WHERE user_id = ?
       ORDER BY created_at
-    `).all(request.session.userId) as DriveAccountRow[];
+    `, [userId]);
 
     response.json({
       configured: configured.credentials !== null,
@@ -133,7 +138,7 @@ export function createGoogleRouter(database: Database, settings: typeof appConfi
     });
   });
 
-  router.get("/google/oauth/start", requireAuthentication, (request, response) => {
+  router.get("/google/oauth/start", requireAuthentication, async (request, response) => {
     const result = readOAuthCredentials(settings);
     if (!result.credentials) {
       response.status(503).json({ error: result.error });
@@ -141,22 +146,28 @@ export function createGoogleRouter(database: Database, settings: typeof appConfi
     }
 
     const userId = request.session.userId;
-    const accountCount = database.prepare(
+    if (!userId) {
+      response.status(401).json({ error: "Authentication required." });
+      return;
+    }
+    const accountCount = await database.get<{ count: number }>(
       "SELECT COUNT(*) AS count FROM drive_accounts WHERE user_id = ?",
-    ).get(userId) as { count: number };
+      [userId],
+    );
+    if (!accountCount) throw new Error("Unable to count connected Google Drive accounts.");
     if (accountCount.count >= MAX_DRIVE_ACCOUNTS) {
       response.status(409).json({ error: `You can connect up to ${MAX_DRIVE_ACCOUNTS} Google Drive accounts.` });
       return;
     }
 
     const state = randomBytes(32).toString("base64url");
-    const insertState = database.transaction(() => {
-      database.prepare("DELETE FROM google_oauth_states WHERE expires_at <= ?").run(Date.now());
-      database.prepare(
+    await database.transaction(async (transaction) => {
+      await transaction.run("DELETE FROM google_oauth_states WHERE expires_at <= ?", [Date.now()]);
+      await transaction.run(
         "INSERT INTO google_oauth_states (state_hash, user_id, expires_at) VALUES (?, ?, ?)",
-      ).run(hashState(state), userId, Date.now() + OAUTH_STATE_TTL_MS);
+        [hashState(state), userId, Date.now() + OAUTH_STATE_TTL_MS],
+      );
     });
-    insertState();
 
     const authorizationUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
     authorizationUrl.searchParams.set("client_id", result.credentials.clientId);
@@ -177,14 +188,14 @@ export function createGoogleRouter(database: Database, settings: typeof appConfi
       return;
     }
 
-    const consumeState = database.transaction(() => {
-      const pending = database.prepare(
+    const pending = await database.transaction(async (transaction) => {
+      const pending = await transaction.get<{ user_id: string }>(
         "SELECT user_id FROM google_oauth_states WHERE state_hash = ? AND expires_at > ?",
-      ).get(hashState(state), Date.now()) as { user_id: string } | undefined;
-      database.prepare("DELETE FROM google_oauth_states WHERE state_hash = ?").run(hashState(state));
+        [hashState(state), Date.now()],
+      );
+      await transaction.run("DELETE FROM google_oauth_states WHERE state_hash = ?", [hashState(state)]);
       return pending;
     });
-    const pending = consumeState();
     if (!pending) {
       redirectToFrontend(response, settings, { driveError: "invalid_state" });
       return;
@@ -246,16 +257,19 @@ export function createGoogleRouter(database: Database, settings: typeof appConfi
         ? encryptToken(token.data.refresh_token, result.credentials.encryptionKey)
         : null;
       const expiresAt = new Date(Date.now() + token.data.expires_in * 1000).toISOString();
-      const insertAccount = database.transaction(() => {
-        const existing = database.prepare(
-          "SELECT 1 FROM drive_accounts WHERE user_id = ? AND email = ? COLLATE NOCASE",
-        ).get(pending.user_id, about.data.user.emailAddress);
-        const count = database.prepare(
+      const inserted = await database.transaction(async (transaction) => {
+        const existing = await transaction.get<{ present: number }>(
+          "SELECT 1 AS present FROM drive_accounts WHERE user_id = ? AND email = ? COLLATE NOCASE",
+          [pending.user_id, about.data.user.emailAddress],
+        );
+        const count = await transaction.get<{ count: number }>(
           "SELECT COUNT(*) AS count FROM drive_accounts WHERE user_id = ?",
-        ).get(pending.user_id) as { count: number };
+          [pending.user_id],
+        );
+        if (!count) throw new Error("Unable to count connected Google Drive accounts.");
         if (!existing && count.count >= MAX_DRIVE_ACCOUNTS) return false;
 
-        database.prepare(`
+        await transaction.run(`
           INSERT INTO drive_accounts (
             id, user_id, email, display_name, photo_url, encrypted_access_token,
             encrypted_refresh_token, token_expires_at, storage_used_bytes,
@@ -271,7 +285,7 @@ export function createGoogleRouter(database: Database, settings: typeof appConfi
             storage_total_bytes = excluded.storage_total_bytes,
             connection_status = 'connected',
             updated_at = datetime('now')
-        `).run(
+        `, [
           accountId,
           pending.user_id,
           about.data.user.emailAddress.toLowerCase(),
@@ -282,10 +296,10 @@ export function createGoogleRouter(database: Database, settings: typeof appConfi
           expiresAt,
           parseQuota(about.data.storageQuota?.usage),
           parseQuota(about.data.storageQuota?.limit),
-        );
+        ]);
         return true;
       });
-      if (!insertAccount()) {
+      if (!inserted) {
         redirectToFrontend(response, settings, { driveError: "account_limit" });
         return;
       }
