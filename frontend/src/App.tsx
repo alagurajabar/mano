@@ -62,23 +62,36 @@ function AuthScreen({
   const [password, setPassword] = useState("");
   const [setupKey, setSetupKey] = useState("");
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
+  const [resetMode, setResetMode] = useState(false);
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setBusy(true);
     setError("");
     try {
-      const response = await apiRequest<{ user: User }>(
-        `/api/auth/${setupRequired ? "setup" : "login"}`,
-        {
+      if (resetMode) {
+        await apiRequest<void>("/api/auth/reset-password", {
           method: "POST",
-          body: JSON.stringify(
-            setupRequired ? { email, password, setupKey } : { email, password },
-          ),
-        },
-      );
-      onAuthenticated(response.user);
+          body: JSON.stringify({ email, password, setupKey }),
+        });
+        setPassword("");
+        setSetupKey("");
+        setResetMode(false);
+        setNotice("Password reset. Sign in with your new password.");
+      } else {
+        const response = await apiRequest<{ user: User }>(
+          `/api/auth/${setupRequired ? "setup" : "login"}`,
+          {
+            method: "POST",
+            body: JSON.stringify(
+              setupRequired ? { email, password, setupKey } : { email, password },
+            ),
+          },
+        );
+        onAuthenticated(response.user);
+      }
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "Unable to sign in.");
     } finally {
@@ -91,14 +104,14 @@ function AuthScreen({
       <div className="auth-card">
         <Brand />
         <div className="auth-heading">
-          <span className="eyebrow">{setupRequired ? "FIRST-TIME SETUP" : "PRIVATE CLOUD STORAGE"}</span>
-          <h1>{setupRequired ? "Create your vault" : "Welcome back"}</h1>
-          <p>{setupRequired ? "Set up the administrator account to get started." : "Sign in to access your DriveVault."}</p>
+          <span className="eyebrow">{setupRequired ? "FIRST-TIME SETUP" : resetMode ? "ACCOUNT RECOVERY" : "PRIVATE CLOUD STORAGE"}</span>
+          <h1>{setupRequired ? "Create your vault" : resetMode ? "Reset your password" : "Welcome back"}</h1>
+          <p>{setupRequired ? "Set up the administrator account to get started." : resetMode ? "Use the recovery key configured in Vercel to set a new administrator password." : "Sign in to access your DriveVault."}</p>
         </div>
         <form onSubmit={submit} className="auth-form">
-          {setupRequired && (
+          {(setupRequired || resetMode) && (
             <label>
-              Setup key
+              {resetMode ? "Recovery key" : "Setup key"}
               <input value={setupKey} onChange={(event) => setSetupKey(event.target.value)} required autoComplete="off" />
             </label>
           )}
@@ -107,15 +120,31 @@ function AuthScreen({
             <input type="email" value={email} onChange={(event) => setEmail(event.target.value)} required autoComplete="email" />
           </label>
           <label>
-            Password
-            <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} required minLength={setupRequired ? 12 : 1} autoComplete={setupRequired ? "new-password" : "current-password"} />
-            {setupRequired && <small>Use at least 12 characters.</small>}
+            {resetMode ? "New password" : "Password"}
+            <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} required minLength={setupRequired || resetMode ? 12 : 1} autoComplete={setupRequired || resetMode ? "new-password" : "current-password"} />
+            {(setupRequired || resetMode) && <small>Use at least 12 characters.</small>}
           </label>
           {error && <div role="alert" className="form-error">{error}</div>}
+          {notice && <div role="status" className="drive-success">{notice}</div>}
           <button className="button button-primary button-full" type="submit" disabled={busy}>
-            {busy ? "Please wait…" : setupRequired ? "Create administrator account" : "Sign in"}
+            {busy ? "Please wait…" : setupRequired ? "Create administrator account" : resetMode ? "Reset password" : "Sign in"}
           </button>
         </form>
+        {!setupRequired && (
+          <button
+            className="auth-mode-button"
+            type="button"
+            onClick={() => {
+              setResetMode(!resetMode);
+              setError("");
+              setNotice("");
+              setPassword("");
+              setSetupKey("");
+            }}
+          >
+            {resetMode ? "Back to sign in" : "Forgot password?"}
+          </button>
+        )}
         <div className="auth-footnote"><ShieldCheck size={15} /> Your files stay in your Google Drive accounts.</div>
       </div>
     </main>
