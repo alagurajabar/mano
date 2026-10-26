@@ -6,16 +6,21 @@ import {
   ChevronRight,
   Cloud,
   Download,
+  ExternalLink,
   File,
   FileText,
+  FileSpreadsheet,
   Film,
   Folder,
   FolderPlus,
   HardDrive,
+  Image,
   LayoutDashboard,
   LogOut,
+  Music2,
   Pencil,
   Plus,
+  Presentation,
   RefreshCw,
   Search,
   Settings,
@@ -368,15 +373,77 @@ interface DriveFile {
   mimeType: string;
   size?: string;
   modifiedTime?: string;
+  webViewLink?: string;
 }
 
 const GOOGLE_FOLDER_MIME = "application/vnd.google-apps.folder";
 const MAX_UPLOAD_BYTES = 4 * 1024 * 1024;
+type DriveFileCategory = "Images" | "Audio" | "Videos" | "PDFs" | "Documents" | "Spreadsheets" | "Presentations" | "Other";
+const driveFileCategories: DriveFileCategory[] = [
+  "Images",
+  "Audio",
+  "Videos",
+  "PDFs",
+  "Documents",
+  "Spreadsheets",
+  "Presentations",
+  "Other",
+];
+const googleExportMimeTypes = new Set([
+  "application/vnd.google-apps.document",
+  "application/vnd.google-apps.spreadsheet",
+  "application/vnd.google-apps.presentation",
+  "application/vnd.google-apps.drawing",
+]);
+
+function getDriveFileCategory(file: DriveFile): DriveFileCategory {
+  const mimeType = file.mimeType.toLowerCase();
+  const extension = file.name.toLowerCase().split(".").pop() ?? "";
+  if (mimeType.startsWith("image/") || mimeType === "application/vnd.google-apps.drawing" || ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "heic", "tiff"].includes(extension)) return "Images";
+  if (mimeType.startsWith("audio/") || ["mp3", "wav", "m4a", "aac", "flac", "ogg", "wma"].includes(extension)) return "Audio";
+  if (mimeType.startsWith("video/") || ["mp4", "mov", "avi", "mkv", "webm", "wmv", "m4v"].includes(extension)) return "Videos";
+  if (mimeType === "application/pdf" || extension === "pdf") return "PDFs";
+  if (
+    mimeType === "application/vnd.google-apps.document" ||
+    mimeType.includes("wordprocessing") ||
+    mimeType.includes("msword") ||
+    mimeType === "text/plain" ||
+    mimeType === "text/rtf" ||
+    ["doc", "docx", "odt", "rtf", "txt"].includes(extension)
+  ) return "Documents";
+  if (
+    mimeType === "application/vnd.google-apps.spreadsheet" ||
+    mimeType.includes("spreadsheet") ||
+    mimeType.includes("excel") ||
+    ["csv", "xls", "xlsx", "ods"].includes(extension)
+  ) return "Spreadsheets";
+  if (
+    mimeType === "application/vnd.google-apps.presentation" ||
+    mimeType.includes("presentation") ||
+    mimeType.includes("powerpoint") ||
+    ["ppt", "pptx", "odp"].includes(extension)
+  ) return "Presentations";
+  return "Other";
+}
+
+function driveFileCategoryIcon(category: DriveFileCategory): typeof File {
+  switch (category) {
+    case "Images": return Image;
+    case "Audio": return Music2;
+    case "Videos": return Film;
+    case "PDFs":
+    case "Documents": return FileText;
+    case "Spreadsheets": return FileSpreadsheet;
+    case "Presentations": return Presentation;
+    default: return File;
+  }
+}
 
 function FilesBrowser({ accounts, section }: { accounts: DriveAccount[]; section: "My Files" | "Videos" | "PDFs" }) {
   const [accountId, setAccountId] = useState("");
   const [folderPath, setFolderPath] = useState<{ id: string; name: string }[]>([]);
   const [files, setFiles] = useState<DriveFile[]>([]);
+  const [fileType, setFileType] = useState<DriveFileCategory | "All files">("All files");
   const [nextPageToken, setNextPageToken] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -427,9 +494,11 @@ function FilesBrowser({ accounts, section }: { accounts: DriveAccount[]; section
   }, [accountId, folderId]);
 
   const visibleFiles = files.filter((file) => {
-    if (section === "Videos") return file.mimeType.startsWith("video/");
-    if (section === "PDFs") return file.mimeType === "application/pdf";
-    return true;
+    if (file.mimeType === GOOGLE_FOLDER_MIME) return section === "My Files";
+    const category = getDriveFileCategory(file);
+    if (section === "Videos") return category === "Videos";
+    if (section === "PDFs") return category === "PDFs";
+    return fileType === "All files" || category === fileType;
   });
 
   async function createFolder() {
@@ -538,6 +607,12 @@ function FilesBrowser({ accounts, section }: { accounts: DriveAccount[]; section
                 </span>
               ))}
             </div>
+            {section === "My Files" && (
+              <select className="drive-type-filter" aria-label="Filter by file type" value={fileType} onChange={(event) => setFileType(event.target.value as DriveFileCategory | "All files")}>
+                <option value="All files">All file types</option>
+                {driveFileCategories.map((category) => <option key={category} value={category}>{category}</option>)}
+              </select>
+            )}
             <div className="drive-actions">
               <button className="button button-secondary" onClick={() => void loadFiles()} disabled={loading || busy} aria-label="Refresh files"><RefreshCw size={14} /> Refresh</button>
               <button className="button button-secondary" onClick={() => void createFolder()} disabled={busy}><Plus size={14} /> New folder</button>
@@ -557,6 +632,9 @@ function FilesBrowser({ accounts, section }: { accounts: DriveAccount[]; section
             <div className="drive-file-list">
               {visibleFiles.map((file) => {
                 const isFolder = file.mimeType === GOOGLE_FOLDER_MIME;
+                const category = getDriveFileCategory(file);
+                const FileIcon = driveFileCategoryIcon(category);
+                const canDownload = !file.mimeType.startsWith("application/vnd.google-apps.") || googleExportMimeTypes.has(file.mimeType);
                 const downloadParams = new URLSearchParams({
                   accountId,
                   name: file.name,
@@ -565,14 +643,15 @@ function FilesBrowser({ accounts, section }: { accounts: DriveAccount[]; section
                 const downloadUrl = `/api/google/files/${encodeURIComponent(file.id)}/download?${downloadParams.toString()}`;
                 return (
                   <article className="drive-file-row" key={file.id}>
-                    <span className="drive-file-icon">{isFolder ? <Folder size={18} /> : <File size={18} />}</span>
+                    <span className="drive-file-icon">{isFolder ? <Folder size={18} /> : <FileIcon size={18} />}</span>
                     <div className="drive-file-copy">
                       {isFolder ? (
                         <button className="drive-file-name" onClick={() => setFolderPath((current) => [...current, { id: file.id, name: file.name }])}>{file.name}</button>
                       ) : <strong className="drive-file-name">{file.name}</strong>}
-                      <small>{isFolder ? "Folder" : `${file.size ? formatBytes(Number(file.size)) : "Google Drive file"}${file.modifiedTime ? ` · ${new Date(file.modifiedTime).toLocaleDateString()}` : ""}`}</small>
+                      <small>{isFolder ? "Folder" : `${category} · ${file.size ? formatBytes(Number(file.size)) : "Google Drive file"}${file.modifiedTime ? ` · ${new Date(file.modifiedTime).toLocaleDateString()}` : ""}`}</small>
                     </div>
-                    {!isFolder && <a className="icon-button drive-icon-action" href={downloadUrl} aria-label={`Download ${file.name}`} title="Download"><Download size={16} /></a>}
+                    {!isFolder && canDownload && <a className="icon-button drive-icon-action" href={downloadUrl} aria-label={`Download ${file.name}`} title="Download"><Download size={16} /></a>}
+                    {!isFolder && file.webViewLink && <a className="icon-button drive-icon-action" href={file.webViewLink} target="_blank" rel="noreferrer" aria-label={`Open ${file.name} in Google Drive`} title="Open in Google Drive"><ExternalLink size={15} /></a>}
                     <button className="icon-button drive-icon-action" onClick={() => void renameFile(file)} disabled={busy} aria-label={`Rename ${file.name}`} title="Rename"><Pencil size={15} /></button>
                     <button className="icon-button drive-icon-action" onClick={() => void trashFile(file)} disabled={busy} aria-label={`Move ${file.name} to Trash`} title="Move to Trash"><Trash2 size={15} /></button>
                   </article>
