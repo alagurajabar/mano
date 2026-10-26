@@ -88,6 +88,7 @@ button { color: inherit; }
 .drive-crumb { color: #a0a3b1; }
 .drive-actions { flex-wrap: wrap; justify-content: flex-end; }
 .drive-actions .button { min-height: 34px; }
+.drive-type-filter { min-height: 34px; padding: 0 9px; color: #55596b; border: 1px solid #e3e5ed; border-radius: 7px; background: #fff; font-size: 11px; }
 .upload-file-button { position: relative; overflow: hidden; cursor: pointer; }
 .upload-file-button input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
 .upload-file-button.disabled { opacity: .65; pointer-events: none; }
@@ -180,6 +181,7 @@ button.drive-file-name { cursor: pointer; }
   .content-grid { grid-template-columns: 1fr; gap: 12px; margin-top: 13px; }
   .panel { min-height: 325px; padding: 17px; }
   .drive-toolbar { align-items: flex-start; flex-direction: column; }
+  .drive-type-filter { width: 100%; }
   .drive-actions { justify-content: flex-start; }
   .drive-browser-heading { align-items: flex-start; flex-direction: column; }
   .drive-browser-heading select { max-width: 100%; width: 100%; }
